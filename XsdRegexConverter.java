@@ -1,4 +1,4 @@
-package com.example.xsdval.xsd;
+package com.example.xjcval;
 
 /**
  * Convertit une expression régulière XML Schema en regex Java.

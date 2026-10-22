@@ -1,108 +1,116 @@
-package com.example.xsdval.rules;
+package com.example.xjcval;
 
-import com.example.xsdval.Report;
-import com.example.xsdval.model.XsdModel.FieldInfo;
-import com.example.xsdval.xsd.Facets;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
 
+import java.lang.annotation.Annotation;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.function.Consumer;
 
-/** Table de correspondance facettes / occurrences XSD -> annotations Jakarta Validation. */
-public final class AnnotationRules {
+/** Table de correspondance occurrences / facettes XSD -> annotations Jakarta Validation. */
+final class AnnotationRules {
     private AnnotationRules() {}
 
     private static final Set<String> INTEGRAL = Set.of("byte", "short", "int", "long", "Byte", "Short", "Integer", "Long");
     private static final Set<String> BIG = Set.of("BigDecimal", "BigInteger");
     private static final Set<String> FLOATING = Set.of("float", "double", "Float", "Double");
 
-    /** onField : sur le champ ; onElement : sur l'argument de type (List&lt;@Size String&gt;). */
-    public record Result(List<Ann> onField, List<Ann> onElement) {}
-
-    public static Result compute(FieldInfo f, String javaType, boolean list, boolean primitive,
-                                 Report report, String where) {
-        List<Ann> field = new ArrayList<>(), elem = new ArrayList<>();
-
-        if (list) {
-            if (f.minOccurs() >= 1) field.add(Ann.of("NotEmpty"));
-            List<String> p = new ArrayList<>();
-            if (f.minOccurs() > 1) p.add("min = " + f.minOccurs());
-            if (f.maxOccurs() >= 0) p.add("max = " + f.maxOccurs());
-            if (!p.isEmpty()) field.add(Ann.of("Size", p.toArray(String[]::new)));
-        } else if (f.required() && !primitive) {
-            field.add(Ann.of("NotNull"));
+    record Spec(Class<? extends Annotation> type, Map<String, Object> params) {
+        static Spec of(Class<? extends Annotation> t, Object... kv) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+            return new Spec(t, m);
         }
-
-        if (f.complexKey() != null) field.add(Ann.valid());
-        if (f.facets() != null) facets(f.facets(), javaType, list ? elem : field, report, where);
-        return new Result(field, elem);
     }
 
-    private static void facets(Facets fc, String type, List<Ann> out, Report report, String where) {
-        if (fc.isEmpty()) return;
+    /** maxOccurs : -1 = unbounded. javaType : nom simple (type d'élément pour une liste). */
+    record Input(boolean collection, boolean required, int minOccurs, int maxOccurs,
+                 boolean complex, Facets facets, String javaType, boolean primitive) {}
 
+    static List<Spec> compute(Input in, Consumer<String> warn) {
+        List<Spec> out = new ArrayList<>();
+
+        if (in.collection()) {
+            if (in.required() && in.minOccurs() >= 1) out.add(Spec.of(NotEmpty.class));
+            List<Object> kv = new ArrayList<>();
+            if (in.required() && in.minOccurs() > 1) { kv.add("min"); kv.add(in.minOccurs()); }
+            if (in.maxOccurs() >= 0) { kv.add("max"); kv.add(in.maxOccurs()); }
+            if (!kv.isEmpty()) out.add(Spec.of(Size.class, kv.toArray()));
+        } else if (in.required() && !in.primitive()) {
+            out.add(Spec.of(NotNull.class));
+        }
+
+        if (in.complex()) out.add(Spec.of(Valid.class));
+
+        Facets fc = in.facets();
+        if (fc != null && !fc.isEmpty()) {
+            if (in.collection()) {
+                if (!fc.onlyEnumeration()) {
+                    warn.accept("facettes des éléments de liste non appliquées (CodeModel ne gère pas les annotations de type)");
+                }
+            } else {
+                facets(fc, in.javaType(), out, warn);
+            }
+        }
+        return out;
+    }
+
+    private static void facets(Facets fc, String type, List<Spec> out, Consumer<String> warn) {
         if (type.equals("String")) {
             Integer lo = fc.length() != null ? fc.length() : fc.minLength();
             Integer hi = fc.length() != null ? fc.length() : fc.maxLength();
-            List<String> p = new ArrayList<>();
-            if (lo != null && lo > 0) p.add("min = " + lo);
-            if (hi != null) p.add("max = " + hi);
-            if (!p.isEmpty()) out.add(Ann.of("Size", p.toArray(String[]::new)));
+            List<Object> kv = new ArrayList<>();
+            if (lo != null && lo > 0) { kv.add("min"); kv.add(lo); }
+            if (hi != null) { kv.add("max"); kv.add(hi); }
+            if (!kv.isEmpty()) out.add(Spec.of(Size.class, kv.toArray()));
             String regex = fc.regex();
-            if (regex != null) out.add(Ann.of("Pattern", "regexp = " + Ann.lit(regex)));
-            if (fc.hasNumeric()) report.warn(where + ": bornes numériques ignorées sur un String");
+            if (regex != null) out.add(Spec.of(Pattern.class, "regexp", regex));
+            if (fc.hasNumeric()) warn.accept("bornes numériques ignorées sur un String");
             return;
         }
 
         boolean integral = INTEGRAL.contains(type), big = BIG.contains(type), floating = FLOATING.contains(type);
         if (!integral && !big && !floating) {
-            if (!fc.onlyEnumeration()) {   // enum JAXB : rien à faire
-                report.warn(where + ": facettes ignorées pour le type Java " + type);
-            }
+            if (!fc.onlyEnumeration()) warn.accept("facettes ignorées pour le type Java " + type);
             return;
         }
 
-        // Borne basse / haute effective (la plus stricte gagne)
         BigDecimal lo = fc.minInclusive(), hi = fc.maxInclusive();
         boolean loInc = true, hiInc = true;
         if (fc.minExclusive() != null && (lo == null || fc.minExclusive().compareTo(lo) >= 0)) { lo = fc.minExclusive(); loInc = false; }
         if (fc.maxExclusive() != null && (hi == null || fc.maxExclusive().compareTo(hi) <= 0)) { hi = fc.maxExclusive(); hiInc = false; }
-
         if (lo != null) out.add(bound(true, lo, loInc, integral));
         if (hi != null) out.add(bound(false, hi, hiInc, integral));
 
         Integer total = fc.totalDigits(), frac = fc.fractionDigits();
         if (total != null || frac != null) {
             if (floating) {
-                report.warn(where + ": @Digits non supporté sur float/double");
+                warn.accept("@Digits non supporté sur float/double");
             } else if (integral || type.equals("BigInteger")) {
-                if (total != null) out.add(Ann.of("Digits", "integer = " + total, "fraction = 0"));
+                if (total != null) out.add(Spec.of(Digits.class, "integer", total, "fraction", 0));
             } else {
                 int fraction = frac != null ? frac : total;
                 int integer = total != null ? Math.max(total - (frac != null ? frac : 0), 0) : 1000;
-                out.add(Ann.of("Digits", "integer = " + integer, "fraction = " + fraction));
+                out.add(Spec.of(Digits.class, "integer", integer, "fraction", fraction));
             }
         }
     }
 
-    private static Ann bound(boolean lower, BigDecimal v, boolean inclusive, boolean integral) {
+    private static Spec bound(boolean lower, BigDecimal v, boolean inclusive, boolean integral) {
         if (integral) {
             BigDecimal n = lower
                     ? (inclusive ? v.setScale(0, RoundingMode.CEILING) : v.setScale(0, RoundingMode.FLOOR).add(BigDecimal.ONE))
                     : (inclusive ? v.setScale(0, RoundingMode.FLOOR) : v.setScale(0, RoundingMode.CEILING).subtract(BigDecimal.ONE));
             try {
-                long l = n.longValueExact();
-                String lit = (l > Integer.MAX_VALUE || l < Integer.MIN_VALUE) ? l + "L" : String.valueOf(l);
-                return Ann.of(lower ? "Min" : "Max", "value = " + lit);
+                return Spec.of(lower ? Min.class : Max.class, "value", n.longValueExact());
             } catch (ArithmeticException tooBig) {
-                // dépasse un long : retombe sur @DecimalMin/@DecimalMax
+                // hors plage d'un long : retombe sur @DecimalMin/@DecimalMax
             }
         }
-        List<String> p = new ArrayList<>();
-        p.add("value = " + Ann.lit(v.toPlainString()));
-        if (!inclusive) p.add("inclusive = false");
-        return Ann.of(lower ? "DecimalMin" : "DecimalMax", p.toArray(String[]::new));
+        return inclusive
+                ? Spec.of(lower ? DecimalMin.class : DecimalMax.class, "value", v.toPlainString())
+                : Spec.of(lower ? DecimalMin.class : DecimalMax.class, "value", v.toPlainString(), "inclusive", false);
     }
 }
