@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<order xmlns="http://example.com/order" order-id="ABC-1234">
+  <customerEmail>client@example.fr</customerEmail>
+  <billTo>
+    <street>1 rue de Rivoli</street>
+    <zip>75001</zip>
+    <city>Paris</city>
+    <country>FR</country>
+  </billTo>
+  <item item-id="1">
+    <sku>ABC-0001</sku>
+    <quantity>2</quantity>
+    <unitPrice>10.50</unitPrice>
+    <category>STANDARD</category>
+  </item>
+  <iban>FR0000000000000000000000000</iban>
+  <tags>promo</tags>
+</order>

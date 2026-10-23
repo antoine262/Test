@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Branchement des règles hors XSD : quelle annotation s'applique à quelle classe / quel champ générés.
+  La logique des règles est dans src/main/java/com/example/rules ; leurs réglages dans rules/rules.properties.
+  Un nom de classe ou de champ inconnu fait échouer la génération.
+-->
+<rules>
+  <!-- règles custom de classe racine -->
+  <class name="Order"><constraint annotation="com.example.rules.order.OrderRules"/></class>
+  <class name="User"><constraint annotation="com.example.rules.user.UserRules"/></class>
+
+  <!-- règle absente du XSD : annotation standard sur un champ -->
+  <field class="Address" name="city"><constraint annotation="jakarta.validation.constraints.NotBlank"/></field>
+</rules>

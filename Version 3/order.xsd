@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="http://example.com/order" xmlns:o="http://example.com/order"
+           targetNamespace="http://example.com/order"
+           elementFormDefault="qualified">
+
+  <!-- pattern -->
+  <xs:simpleType name="Sku">
+    <xs:restriction base="xs:string"><xs:pattern value="[A-Z]{3}-\d{4}"/></xs:restriction>
+  </xs:simpleType>
+
+  <!-- bornes sur entier (positiveInteger => min 1) -->
+  <xs:simpleType name="Quantity">
+    <xs:restriction base="xs:positiveInteger"><xs:maxInclusive value="1000"/></xs:restriction>
+  </xs:simpleType>
+
+  <!-- bornes exclusives + digits -->
+  <xs:simpleType name="Price">
+    <xs:restriction base="xs:decimal">
+      <xs:minExclusive value="0"/><xs:maxInclusive value="99999.99"/>
+      <xs:totalDigits value="7"/><xs:fractionDigits value="2"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- restriction en chaîne : ShortEmail dérive de Email -->
+  <xs:simpleType name="Email">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="254"/><xs:pattern value="[^@\s]+@[^@\s]+\.[a-z]{2,}"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="ShortEmail">
+    <xs:restriction base="Email"><xs:maxLength value="50"/></xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Iban">
+    <xs:restriction base="xs:string"><xs:length value="27"/></xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Country">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="FR"/><xs:enumeration value="DE"/><xs:enumeration value="ES"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Category">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="STANDARD"/><xs:enumeration value="ALCOHOL"/><xs:enumeration value="HAZMAT"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="Address">
+    <xs:sequence>
+      <xs:element name="street">
+        <xs:simpleType><xs:restriction base="xs:string"><xs:maxLength value="100"/></xs:restriction></xs:simpleType>
+      </xs:element>
+      <xs:element name="zip">
+        <xs:simpleType><xs:restriction base="xs:string"><xs:pattern value="\d{5}"/></xs:restriction></xs:simpleType>
+      </xs:element>
+      <xs:element name="city">
+        <xs:simpleType><xs:restriction base="xs:string"><xs:minLength value="1"/></xs:restriction></xs:simpleType>
+      </xs:element>
+      <xs:element name="country" type="Country"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="Item">
+    <xs:sequence>
+      <xs:element name="sku" type="Sku"/>
+      <xs:element name="quantity" type="Quantity"/>
+      <xs:element name="unitPrice" type="Price"/>
+      <xs:element name="category" type="Category" minOccurs="0"/>
+      <xs:element name="comment" minOccurs="0">
+        <xs:simpleType><xs:restriction base="xs:string"><xs:maxLength value="200"/></xs:restriction></xs:simpleType>
+      </xs:element>
+    </xs:sequence>
+    <xs:attribute name="item-id" type="xs:int" use="required"/>
+  </xs:complexType>
+
+  <xs:element name="order">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="customerEmail" type="ShortEmail"/>
+        <xs:element name="billTo" type="Address"/>
+        <xs:element name="shipTo" type="Address" minOccurs="0"/>
+        <xs:element name="item" type="Item" minOccurs="1" maxOccurs="1000"/>
+
+        <!-- choice simple : exactement un moyen de paiement -->
+        <xs:choice>
+          <xs:element name="creditCard" type="Sku"/>
+          <xs:element name="iban" type="Iban"/>
+        </xs:choice>
+
+        <!-- xs:list : 5 mots maximum, 10 caractères par mot -->
+        <xs:element name="notes" minOccurs="0">
+          <xs:simpleType>
+            <xs:restriction>
+              <xs:simpleType>
+                <xs:list>
+                  <xs:simpleType><xs:restriction base="xs:string"><xs:maxLength value="10"/></xs:restriction></xs:simpleType>
+                </xs:list>
+              </xs:simpleType>
+              <xs:maxLength value="5"/>
+            </xs:restriction>
+          </xs:simpleType>
+        </xs:element>
+
+        <!-- choice dont une branche est une séquence -->
+        <xs:choice minOccurs="0">
+          <xs:element name="pickup" type="xs:string"/>
+          <xs:sequence>
+            <xs:element name="carrier" type="xs:string"/>
+            <xs:element name="trackingNo" type="xs:string"/>
+          </xs:sequence>
+        </xs:choice>
+
+        <!-- liste d'éléments simples avec facette sur chaque élément -->
+        <xs:element name="tags" minOccurs="0" maxOccurs="unbounded">
+          <xs:simpleType><xs:restriction base="xs:string"><xs:maxLength value="20"/></xs:restriction></xs:simpleType>
+        </xs:element>
+      </xs:sequence>
+      <xs:attribute name="order-id" type="Sku" use="required"/>
+    </xs:complexType>
+
+    <!-- unicité des lignes (validation XML uniquement ; côté Java : UniqueSkuRule) -->
+    <xs:unique name="uniqueItemId">
+      <xs:selector xpath="o:item"/><xs:field xpath="@item-id"/>
+    </xs:unique>
+  </xs:element>
+
+  <xs:element name="user">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="address" type="Address"/>
+        <xs:element name="country" type="Country"/>
+        <xs:element name="department" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
