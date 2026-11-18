@@ -1,0 +1,153 @@
+package com.example.xjc.metadata;
+
+import com.sun.tools.xjc.model.CPropertyInfo;
+
+import com.sun.xml.xsom.XSAnnotation;
+import com.sun.xml.xsom.XSComponent;
+import com.sun.xml.xsom.XSParticle;
+import com.sun.xml.xsom.XSTerm;
+
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class MetadataReader {
+
+    private static final String APPINFO = "appinfo";
+
+    private static final String JSON_META = "jsonMeta";
+    private static final String CUSTOM_PROPERTY = "customProperty";
+
+    private static final String KEY = "key";
+    private static final String VALUE = "value";
+
+    public List<Metadata> read(CPropertyInfo property) {
+
+        List<Metadata> result = new ArrayList<>();
+
+        XSComponent component = property.getSchemaComponent();
+
+        if (component == null) {
+            return result;
+        }
+
+        // Cas 1 : annotation directement sur le composant
+        readComponent(component, result);
+
+        // Cas 2 : annotation sur le terme de la particule
+        if (component instanceof XSParticle) {
+
+            XSParticle particle = (XSParticle) component;
+
+            XSTerm term = particle.getTerm();
+
+            if (term != null && term != component) {
+                readComponent(term, result);
+            }
+        }
+
+        return result;
+    }
+
+    private void readComponent(
+            XSComponent component,
+            List<Metadata> result) {
+
+        XSAnnotation annotation = component.getAnnotation();
+
+        if (annotation == null) {
+            return;
+        }
+
+        Object annotationContent = annotation.getAnnotation();
+
+        if (!(annotationContent instanceof Element)) {
+            return;
+        }
+
+        Element root = (Element) annotationContent;
+
+        readAnnotationContent(root, result);
+    }
+
+    private void readAnnotationContent(
+            Element root,
+            List<Metadata> result) {
+
+        if (APPINFO.equals(root.getLocalName())) {
+            readAppinfo(root, result);
+            return;
+        }
+
+        NodeList appinfos =
+                root.getElementsByTagNameNS("*", APPINFO);
+
+        for (int i = 0; i < appinfos.getLength(); i++) {
+
+            Element appinfo = (Element) appinfos.item(i);
+
+            readAppinfo(appinfo, result);
+        }
+    }
+
+    private void readAppinfo(
+            Element appinfo,
+            List<Metadata> result) {
+
+        NodeList children = appinfo.getChildNodes();
+
+        for (int i = 0; i < children.getLength(); i++) {
+
+            Node node = children.item(i);
+
+            if (!(node instanceof Element)) {
+                continue;
+            }
+
+            Element element = (Element) node;
+
+            String type = element.getLocalName();
+
+            if (type == null) {
+                continue;
+            }
+
+            if (JSON_META.equals(type)
+                    || CUSTOM_PROPERTY.equals(type)) {
+
+                String key = element.getAttribute(KEY);
+                String value = element.getAttribute(VALUE);
+
+                if (key.isBlank()) {
+                    continue;
+                }
+
+                result.add(new Metadata(type, key, value));
+            }
+        }
+    }
+}
+
+XSComponent component = property.getSchemaComponent();
+
+System.out.println("--------------------------------");
+System.out.println("Property : " + property.getName(false));
+System.out.println("Component : " +
+        (component == null ? "null" : component.getClass().getName()));
+
+if (component instanceof XSParticle) {
+
+    XSParticle particle = (XSParticle) component;
+
+    System.out.println("Particle term : " +
+            particle.getTerm().getClass().getName());
+
+    System.out.println("Particle annotation : " +
+            particle.getAnnotation());
+
+    System.out.println("Term annotation : " +
+            particle.getTerm().getAnnotation());
+}
