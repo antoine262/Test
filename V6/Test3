@@ -1,0 +1,452 @@
+###################################################################
+# PLUGIN XJC : xs:appinfo/<meta:jsonMeta> -> @CustomProperty(ies)
+# Java 17 / Maven / Jakarta EE 10 (JAXB 4)
+# Une classe Java publique par fichier : decoupe aux separateurs.
+###################################################################
+
+===================================================================
+0. ARBORESCENCE (projet multi-module)
+===================================================================
+
+mon-projet/
+├── pom.xml                                   (parent)           -> section 1
+├── annotations/
+│   ├── pom.xml                                                  -> section 2
+│   └── src/main/java/com/example/annotations/
+│       ├── CustomProperty.java                                  -> section 2
+│       └── CustomProperties.java                                -> section 2
+├── xjc-plugin/
+│   ├── pom.xml                                                  -> section 3
+│   └── src/main/
+│       ├── java/com/example/xjc/CustomMetaPlugin.java           -> section 3
+│       └── resources/META-INF/services/com.sun.tools.xjc.Plugin -> section 3
+└── app/
+    ├── pom.xml                                                  -> section 4
+    └── src/main/resources/xsd/person.xsd                        -> section 5
+
+Ordre de build (automatique avec le parent) : annotations, xjc-plugin, app.
+
+
+===================================================================
+1. mon-projet/pom.xml  (parent)
+===================================================================
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.example</groupId>
+  <artifactId>mon-projet</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <modules>
+    <module>annotations</module>
+    <module>xjc-plugin</module>
+    <module>app</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+</project>
+
+
+===================================================================
+2. MODULE annotations
+===================================================================
+
+----- annotations/pom.xml -----
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>mon-projet</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>annotations</artifactId>
+</project>
+
+----- annotations/src/main/java/com/example/annotations/CustomProperty.java -----
+
+package com.example.annotations;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.TYPE, ElementType.FIELD, ElementType.METHOD})
+@Repeatable(CustomProperties.class)
+public @interface CustomProperty {
+    String key();
+    String value();
+}
+
+----- annotations/src/main/java/com/example/annotations/CustomProperties.java -----
+
+package com.example.annotations;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.TYPE, ElementType.FIELD, ElementType.METHOD})
+public @interface CustomProperties {
+    CustomProperty[] value();
+}
+
+
+===================================================================
+3. MODULE xjc-plugin
+===================================================================
+
+----- xjc-plugin/pom.xml -----
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>mon-projet</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>xjc-plugin</artifactId>
+
+  <dependencies>
+    <!-- fourni par le jaxb-maven-plugin a l'execution -->
+    <dependency>
+      <groupId>org.glassfish.jaxb</groupId>
+      <artifactId>jaxb-xjc</artifactId>
+      <version>4.0.5</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+</project>
+
+----- xjc-plugin/src/main/resources/META-INF/services/com.sun.tools.xjc.Plugin -----
+(une seule ligne, sans extension, sans ligne vide parasite)
+
+com.example.xjc.CustomMetaPlugin
+
+----- xjc-plugin/src/main/java/com/example/xjc/CustomMetaPlugin.java -----
+
+package com.example.xjc;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import org.w3c.dom.Element;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXException;
+
+import com.sun.codemodel.JAnnotatable;
+import com.sun.codemodel.JAnnotationArrayMember;
+import com.sun.codemodel.JAnnotationUse;
+import com.sun.codemodel.JCodeModel;
+import com.sun.codemodel.JDefinedClass;
+import com.sun.codemodel.JFieldVar;
+import com.sun.tools.xjc.Options;
+import com.sun.tools.xjc.Plugin;
+import com.sun.tools.xjc.model.CCustomizations;
+import com.sun.tools.xjc.model.CPluginCustomization;
+import com.sun.tools.xjc.model.CPropertyInfo;
+import com.sun.tools.xjc.outline.ClassOutline;
+import com.sun.tools.xjc.outline.EnumOutline;
+import com.sun.tools.xjc.outline.FieldOutline;
+import com.sun.tools.xjc.outline.Outline;
+
+/**
+ * Lit <meta:jsonMeta key="..." value="..."/> dans xs:appinfo et genere :
+ *  - 1 balise   -> @CustomProperty(key = "...", value = "...")
+ *  - 2+ balises -> @CustomProperties({ @CustomProperty(...), ... })
+ *
+ * Option XJC : -XcustomMeta
+ */
+public class CustomMetaPlugin extends Plugin {
+
+    // ------------------------------------------------------------------
+    // CONFIGURATION : tout ce qu'il faut changer pour adapter le plugin
+    // ------------------------------------------------------------------
+    private static final String OPTION_NAME = "XcustomMeta";
+
+    // Cote XSD
+    private static final String META_NAMESPACE  = "urn:example:custom-meta";
+    private static final String META_TAG        = "jsonMeta";
+    private static final String META_ATTR_KEY   = "key";
+    private static final String META_ATTR_VALUE = "value";
+
+    // Cote Java genere (references par nom : pas de dependance a la compilation)
+    private static final String ANNOTATION_PACKAGE = "com.example.annotations";
+    private static final String PROPERTY_CLASS     = ANNOTATION_PACKAGE + ".CustomProperty";
+    private static final String PROPERTIES_CLASS   = ANNOTATION_PACKAGE + ".CustomProperties";
+    private static final String MEMBER_KEY         = "key";
+    private static final String MEMBER_VALUE       = "value";
+
+    /** Paire cle/valeur lue dans le XSD. */
+    private static final class Meta {
+        final String key;
+        final String value;
+        Meta(String key, String value) {
+            this.key = key;
+            this.value = value;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Declaration du plugin
+    // ------------------------------------------------------------------
+    @Override
+    public String getOptionName() {
+        return OPTION_NAME;
+    }
+
+    @Override
+    public String getUsage() {
+        return "  -" + OPTION_NAME + "    :  genere @CustomProperty / @CustomProperties "
+                + "depuis <" + META_TAG + "> dans xs:appinfo";
+    }
+
+    /** INDISPENSABLE : sans cela XJC supprime <jsonMeta> avant run(). */
+    @Override
+    public List<String> getCustomizationURIs() {
+        return Collections.singletonList(META_NAMESPACE);
+    }
+
+    @Override
+    public boolean isCustomizationTagName(String nsUri, String localName) {
+        return META_NAMESPACE.equals(nsUri) && META_TAG.equals(localName);
+    }
+
+    // ------------------------------------------------------------------
+    // Traitement
+    // ------------------------------------------------------------------
+    @Override
+    public boolean run(Outline outline, Options opt, ErrorHandler errorHandler) throws SAXException {
+        JCodeModel cm = outline.getCodeModel();
+
+        // Classes + leurs champs
+        for (ClassOutline co : outline.getClasses()) {
+            annotate(cm, co.implClass, readMetas(co.target.getCustomizations()));
+
+            for (FieldOutline fo : co.getDeclaredFields()) {
+                CPropertyInfo prop = fo.getPropertyInfo();
+                List<Meta> metas = readMetas(prop.getCustomizations());
+                if (metas.isEmpty()) {
+                    continue;
+                }
+                JFieldVar field = findField(co.implClass, prop);
+                if (field != null) {
+                    annotate(cm, field, metas);
+                }
+            }
+        }
+
+        // Enums (xs:simpleType avec enumeration)
+        for (EnumOutline eo : outline.getEnums()) {
+            annotate(cm, eo.clazz, readMetas(eo.target.getCustomizations()));
+        }
+        return true;
+    }
+
+    /** Lit les <jsonMeta> d'une liste de customisations. */
+    private List<Meta> readMetas(CCustomizations customizations) {
+        List<Meta> result = new ArrayList<>();
+        if (customizations == null) {
+            return result;
+        }
+        for (CPluginCustomization c : customizations) {
+            Element e = c.element;
+            if (META_NAMESPACE.equals(e.getNamespaceURI()) && META_TAG.equals(e.getLocalName())) {
+                result.add(new Meta(e.getAttribute(META_ATTR_KEY), e.getAttribute(META_ATTR_VALUE)));
+                c.markAsAcknowledged(); // sinon XJC signale une customisation non reconnue
+            }
+        }
+        return result;
+    }
+
+    /** Retrouve le champ Java correspondant a la propriete (gere les noms echappes type _return). */
+    private JFieldVar findField(JDefinedClass clazz, CPropertyInfo prop) {
+        String name = prop.getName(false);
+        JFieldVar f = clazz.fields().get(name);
+        if (f == null) {
+            f = clazz.fields().get("_" + name);
+        }
+        return f;
+    }
+
+    /** 1 meta -> @CustomProperty ; 2+ -> @CustomProperties({...}). */
+    private void annotate(JCodeModel cm, JAnnotatable target, List<Meta> metas) {
+        if (metas.isEmpty()) {
+            return;
+        }
+        if (metas.size() == 1) {
+            fill(target.annotate(cm.directClass(PROPERTY_CLASS)), metas.get(0));
+            return;
+        }
+        JAnnotationUse container = target.annotate(cm.directClass(PROPERTIES_CLASS));
+        JAnnotationArrayMember array = container.paramArray(MEMBER_VALUE);
+        for (Meta m : metas) {
+            fill(array.annotate(cm.directClass(PROPERTY_CLASS)), m);
+        }
+    }
+
+    private void fill(JAnnotationUse use, Meta m) {
+        use.param(MEMBER_KEY, m.key);
+        use.param(MEMBER_VALUE, m.value);
+    }
+}
+
+
+===================================================================
+4. MODULE app (celui qui genere les classes depuis le XSD)
+===================================================================
+
+----- app/pom.xml -----
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>mon-projet</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>app</artifactId>
+
+  <dependencies>
+    <!-- le code genere importe CustomProperty / CustomProperties -->
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>annotations</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>jakarta.xml.bind</groupId>
+      <artifactId>jakarta.xml.bind-api</artifactId>
+      <version>4.0.2</version>
+    </dependency>
+    <dependency>
+      <groupId>org.glassfish.jaxb</groupId>
+      <artifactId>jaxb-runtime</artifactId>
+      <version>4.0.5</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.jvnet.jaxb</groupId>
+        <artifactId>jaxb-maven-plugin</artifactId>
+        <version>4.0.8</version> <!-- a verifier : derniere 4.x -->
+        <executions>
+          <execution>
+            <goals><goal>generate</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <schemaDirectory>src/main/resources/xsd</schemaDirectory>
+          <extension>true</extension>
+          <args>
+            <arg>-XcustomMeta</arg>
+          </args>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>xjc-plugin</artifactId>
+            <version>${project.version}</version>
+          </dependency>
+        </dependencies>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+
+
+===================================================================
+5. app/src/main/resources/xsd/person.xsd
+===================================================================
+
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+           xmlns:meta="urn:example:custom-meta"
+           jaxb:version="3.0"
+           jaxb:extensionBindingPrefixes="meta">
+
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+
+        <!-- 2 balises -> @CustomProperties({...}) sur le champ -->
+        <xs:element name="firstName" type="xs:string">
+          <xs:annotation>
+            <xs:appinfo>
+              <meta:jsonMeta key="title" value="Prenom"/>
+              <meta:jsonMeta key="description" value="Le prenom"/>
+            </xs:appinfo>
+          </xs:annotation>
+        </xs:element>
+
+        <!-- 1 balise -> @CustomProperty(...) sur le champ -->
+        <xs:element name="lastName" type="xs:string">
+          <xs:annotation>
+            <xs:appinfo>
+              <meta:jsonMeta key="title" value="Nom"/>
+            </xs:appinfo>
+          </xs:annotation>
+        </xs:element>
+
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+
+
+===================================================================
+6. RESULTAT ATTENDU (app/target/generated-sources/xjc/.../Person.java)
+===================================================================
+
+@CustomProperties({
+    @CustomProperty(key = "title", value = "Prenom"),
+    @CustomProperty(key = "description", value = "Le prenom")
+})
+protected String firstName;
+
+@CustomProperty(key = "title", value = "Nom")
+protected String lastName;
+
+
+===================================================================
+7. COMMANDE
+===================================================================
+
+mvn clean install            (a la racine, mon-projet/)
+
+
+===================================================================
+8. SI RIEN N'EST GENERE : CHECKLIST
+===================================================================
+
+1. Le fichier META-INF/services/com.sun.tools.xjc.Plugin existe et contient
+   exactement com.example.xjc.CustomMetaPlugin
+2. -XcustomMeta est bien dans <args> du jaxb-maven-plugin
+3. Le XSD a bien xmlns:meta, jaxb:version et jaxb:extensionBindingPrefixes="meta"
+4. Le namespace du XSD est identique a META_NAMESPACE dans le plugin
+5. Le module xjc-plugin est bien en <dependency> DU PLUGIN Maven (pas du projet)
+6. Les annotations se mettent sur un xs:element LOCAL, un xs:attribute,
+   un xs:complexType ou un xs:simpleType enum. Un element global type
+   (<xs:element name="x" type="T"/>) n'est pas gere.
