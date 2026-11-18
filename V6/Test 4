@@ -1,0 +1,204 @@
+package com.example.xjc;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import org.w3c.dom.Element;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXException;
+
+import com.sun.codemodel.JAnnotatable;
+import com.sun.codemodel.JAnnotationArrayMember;
+import com.sun.codemodel.JAnnotationUse;
+import com.sun.codemodel.JCodeModel;
+import com.sun.codemodel.JDefinedClass;
+import com.sun.codemodel.JFieldVar;
+import com.sun.codemodel.JMethod;
+import com.sun.tools.xjc.Options;
+import com.sun.tools.xjc.Plugin;
+import com.sun.tools.xjc.model.CCustomizations;
+import com.sun.tools.xjc.model.CElementInfo;
+import com.sun.tools.xjc.model.CPluginCustomization;
+import com.sun.tools.xjc.model.CPropertyInfo;
+import com.sun.tools.xjc.outline.ClassOutline;
+import com.sun.tools.xjc.outline.EnumConstantOutline;
+import com.sun.tools.xjc.outline.EnumOutline;
+import com.sun.tools.xjc.outline.FieldOutline;
+import com.sun.tools.xjc.outline.Outline;
+import com.sun.tools.xjc.outline.PackageOutline;
+
+/**
+ * Lit <meta:jsonMeta key="..." value="..."/> dans xs:appinfo et genere :
+ *  - 1 balise   -> @CustomProperty(key = "...", value = "...")
+ *  - 2+ balises -> @CustomProperties({ @CustomProperty(...), ... })
+ *
+ * Cibles gerees :
+ *  - champs (xs:element local simple ou complexe, xs:attribute)
+ *  - classes (xs:complexType, xs:element global a type anonyme)
+ *  - enums et constantes d'enum
+ *  - xs:element global a type nomme -> methode createXxx de l'ObjectFactory
+ *
+ * Option XJC : -XcustomMeta
+ */
+public class CustomMetaPlugin extends Plugin {
+
+    // ------------------------------------------------------------------
+    // CONFIGURATION : tout ce qu'il faut changer pour adapter le plugin
+    // ------------------------------------------------------------------
+    private static final String OPTION_NAME = "XcustomMeta";
+
+    // Cote XSD
+    private static final String META_NAMESPACE  = "urn:example:custom-meta";
+    private static final String META_TAG        = "jsonMeta";
+    private static final String META_ATTR_KEY   = "key";
+    private static final String META_ATTR_VALUE = "value";
+
+    // Cote Java genere (references par nom : pas de dependance a la compilation)
+    private static final String ANNOTATION_PACKAGE = "com.example.annotations";
+    private static final String PROPERTY_CLASS     = ANNOTATION_PACKAGE + ".CustomProperty";
+    private static final String PROPERTIES_CLASS   = ANNOTATION_PACKAGE + ".CustomProperties";
+    private static final String MEMBER_KEY         = "key";
+    private static final String MEMBER_VALUE       = "value";
+
+    /** Paire cle/valeur lue dans le XSD. */
+    private static final class Meta {
+        final String key;
+        final String value;
+        Meta(String key, String value) {
+            this.key = key;
+            this.value = value;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Declaration du plugin
+    // ------------------------------------------------------------------
+    @Override
+    public String getOptionName() {
+        return OPTION_NAME;
+    }
+
+    @Override
+    public String getUsage() {
+        return "  -" + OPTION_NAME + "    :  genere @CustomProperty / @CustomProperties "
+                + "depuis <" + META_TAG + "> dans xs:appinfo";
+    }
+
+    /** INDISPENSABLE : sans cela XJC supprime <jsonMeta> avant run(). */
+    @Override
+    public List<String> getCustomizationURIs() {
+        return Collections.singletonList(META_NAMESPACE);
+    }
+
+    @Override
+    public boolean isCustomizationTagName(String nsUri, String localName) {
+        return META_NAMESPACE.equals(nsUri) && META_TAG.equals(localName);
+    }
+
+    // ------------------------------------------------------------------
+    // Traitement
+    // ------------------------------------------------------------------
+    @Override
+    public boolean run(Outline outline, Options opt, ErrorHandler errorHandler) throws SAXException {
+        JCodeModel cm = outline.getCodeModel();
+
+        // 1) Classes (complexType, element global anonyme) + leurs champs
+        for (ClassOutline co : outline.getClasses()) {
+            annotate(cm, co.implClass, readMetas(co.target.getCustomizations()));
+
+            for (FieldOutline fo : co.getDeclaredFields()) {
+                CPropertyInfo prop = fo.getPropertyInfo();
+                List<Meta> metas = readMetas(prop.getCustomizations());
+                if (metas.isEmpty()) {
+                    continue;
+                }
+                JFieldVar field = findField(co.implClass, prop);
+                if (field != null) {
+                    annotate(cm, field, metas);
+                }
+            }
+        }
+
+        // 2) Enums et leurs constantes
+        for (EnumOutline eo : outline.getEnums()) {
+            annotate(cm, eo.clazz, readMetas(eo.target.getCustomizations()));
+            for (EnumConstantOutline ec : eo.constants) {
+                annotate(cm, ec.constRef, readMetas(ec.target.getCustomizations()));
+            }
+        }
+
+        // 3) Elements globaux a type nomme (generes en JAXBElement via ObjectFactory)
+        for (CElementInfo ei : outline.getModel().getAllElements()) {
+            List<Meta> metas = readMetas(ei.getCustomizations());
+            if (metas.isEmpty()) {
+                continue;
+            }
+            JMethod method = findFactoryMethod(outline, ei);
+            if (method != null) {
+                annotate(cm, method, metas);
+            }
+        }
+        return true;
+    }
+
+    /** Lit les <jsonMeta> d'une liste de customisations. */
+    private List<Meta> readMetas(CCustomizations customizations) {
+        List<Meta> result = new ArrayList<>();
+        if (customizations == null) {
+            return result;
+        }
+        for (CPluginCustomization c : customizations) {
+            Element e = c.element;
+            if (META_NAMESPACE.equals(e.getNamespaceURI()) && META_TAG.equals(e.getLocalName())) {
+                result.add(new Meta(e.getAttribute(META_ATTR_KEY), e.getAttribute(META_ATTR_VALUE)));
+                c.markAsAcknowledged(); // sinon XJC signale une customisation non reconnue
+            }
+        }
+        return result;
+    }
+
+    /** Retrouve le champ Java correspondant a la propriete (gere les noms echappes type _return). */
+    private JFieldVar findField(JDefinedClass clazz, CPropertyInfo prop) {
+        String name = prop.getName(false);
+        JFieldVar f = clazz.fields().get(name);
+        if (f == null) {
+            f = clazz.fields().get("_" + name);
+        }
+        return f;
+    }
+
+    /** Retrouve la methode createXxx de l'ObjectFactory pour un element global. */
+    private JMethod findFactoryMethod(Outline outline, CElementInfo ei) {
+        String methodName = "create" + ei.getSqueezedName();
+        for (PackageOutline po : outline.getAllPackageContexts()) {
+            for (JMethod m : po.objectFactory().methods()) {
+                if (methodName.equals(m.name())) {
+                    return m;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 1 meta -> @CustomProperty ; 2+ -> @CustomProperties({...}). */
+    private void annotate(JCodeModel cm, JAnnotatable target, List<Meta> metas) {
+        if (metas.isEmpty()) {
+            return;
+        }
+        if (metas.size() == 1) {
+            fill(target.annotate(cm.directClass(PROPERTY_CLASS)), metas.get(0));
+            return;
+        }
+        JAnnotationUse container = target.annotate(cm.directClass(PROPERTIES_CLASS));
+        JAnnotationArrayMember array = container.paramArray(MEMBER_VALUE);
+        for (Meta m : metas) {
+            fill(array.annotate(cm.directClass(PROPERTY_CLASS)), m);
+        }
+    }
+
+    private void fill(JAnnotationUse use, Meta m) {
+        use.param(MEMBER_KEY, m.key);
+        use.param(MEMBER_VALUE, m.value);
+    }
+}
